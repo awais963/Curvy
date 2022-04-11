@@ -1,0 +1,871 @@
+package io.matech.curvy
+
+import android.animation.*
+import android.content.Context
+import android.graphics.*
+import android.graphics.drawable.Drawable
+import android.util.AttributeSet
+import android.util.Log
+import android.util.TypedValue
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import androidx.annotation.IdRes
+import androidx.core.content.res.ResourcesCompat
+import androidx.core.graphics.drawable.DrawableCompat
+import androidx.core.view.doOnLayout
+import androidx.interpolator.view.animation.FastOutSlowInInterpolator
+import androidx.navigation.NavController
+import androidx.navigation.NavDestination
+import androidx.navigation.NavGraph
+import androidx.navigation.NavOptions
+import androidx.vectordrawable.graphics.drawable.AnimatedVectorDrawableCompat
+import io.matech.curvybottomnavigation.R
+import kotlin.math.abs
+
+class CurvyBottomNavigationView @JvmOverloads constructor(
+    context: Context,
+    attrs: AttributeSet? = null,
+    defStyleAttr: Int = 0
+) : FrameLayout(context, attrs, defStyleAttr) {
+
+    companion object {
+        private val TAG = CurvyBottomNavigationView::class.java.simpleName
+        private const val PROPERTY_OFFSET = "OFFSET"
+        private const val PROPERTY_CENTER_Y = "CENTER_Y"
+        private const val PROPERTY_CENTER_X = "CENTER_X"
+    }
+
+    // first bezier curve
+    private val firstCurveStart = PointF()
+    private val firstCurveEnd = PointF()
+    private val firstCurveControlPoint1 = PointF()
+    private val firstCurveControlPoint2 = PointF()
+
+    // second bezier curve
+    private val secondCurveStart = PointF()
+    private val secondCurveEnd = PointF()
+    private val secondCurveControlPoint1 = PointF()
+    private val secondCurveControlPoint2 = PointF()
+
+    private var fabBorderRadius: Float = 1f
+
+    // path to represent the curved background
+    private val path: Path = Path()
+
+    // paints the BottomNavigation background
+    private val navPaint: Paint
+
+    // paints the FAB background
+    private val fabPaint: Paint
+
+    private val fabBorderPaint: Paint
+
+    // initialize empty array so that we don't have to check if it's initialized or not
+    private var navMenuItems: Array<NavMenuItem> = arrayOf()
+    private lateinit var bottomNavItemViews: Array<BottomNavItemView>
+    private lateinit var menuIcons: Array<Drawable>
+    private lateinit var menuAVDs: Array<AnimatedVectorDrawableCompat>
+
+    // width of the cell, computed in onSizeChanged()
+    private var menuCellWidth: Int = 0
+
+    // x-offset of the current selected cell with respect to left side
+    private var cellOffsetX: Int = 0
+
+    // current active index
+    private var selectedIndex: Int = -1
+
+    // index of AVD to be animated
+    private var fabIconIndex: Int = -1
+
+
+    private var prevSelectedIndex: Int = -1
+
+
+    private val fabSize = resources.getDimensionPixelSize(R.dimen.cbn_fab_size)
+
+    // total height of this layout
+    private val layoutHeight = resources.getDimension(R.dimen.cbn_layout_height)
+
+    // top offset for the BottomNavigation
+    private val bottomNavOffsetY =
+        layoutHeight - resources.getDimensionPixelSize(
+            R.dimen.cbn_height
+        )
+
+    // offset of the curve lowest point from the bottom of the BottomNavigation
+    private val curveBottomOffset =
+        resources.getDimensionPixelSize(R.dimen.cbn_bottom_curve_offset)
+
+    // radius of the FAB
+    private val fabRadius = resources.getDimension(R.dimen.cbn_fab_size) / 2
+
+    // offset of the FAB from top of the layout (control how much deep the fab embeds in BottomNavigation)
+    // if set to 0, then half of the FAB will embed in BottomNavigation
+    private val fabTopOffset = resources.getDimension(R.dimen.cbn_fab_top_offset)
+
+    // spacing between the fab and the curve (computed using other parameters)
+    private val fabMargin = layoutHeight - fabSize - fabTopOffset - curveBottomOffset
+
+    // offset of the top control point (independent of curves)
+    private val topControlX = fabRadius + fabRadius / 2
+    private val topControlY = bottomNavOffsetY + fabRadius / 6
+
+    // offset of the bottom control point (independent of curves)
+    private val bottomControlX = fabRadius + (fabRadius / 2)
+    private val bottomControlY = fabRadius / 4
+
+    // total width of the curve
+    private val curveHalfWidth = fabRadius * 2 + fabMargin
+
+    // center Y
+    private val centerY = fabSize / 2f + fabTopOffset
+    private var centerX = -1f
+    private var curCenterY = centerY
+
+    // flag to indicate the animation in progress (to control whether to handle the click or not)
+    private var isAnimating = false
+
+    // listener for the menuItemClick
+    private var menuItemClickListener: ((NavMenuItem, Int) -> Unit)? = null
+
+    // control the rendering of the menu when the menu is empty
+    private var isMenuInitialized = false
+
+    private var animatorSet = AnimatorSet()
+
+    // default values for custom attributes
+    private var mItemSelectedColor = Color.parseColor("#FF000000")
+        set(value) {
+            field = value
+            if (isMenuInitialized) {
+                updateMenuAVDsTint()
+                postInvalidate()
+            }
+        }
+    private var mItemUnSelectedColor = Color.parseColor("#8F8F8F")
+        set(value) {
+            field = value
+            if (isMenuInitialized) {
+                updateMenuIconsTint()
+                postInvalidate()
+            }
+        }
+    private var fabShadowColor: Int = Color.parseColor("#AE0202")
+        set(value) {
+            field = value
+            fabPaint.setShadowLayer(mFabElevation, 0f, 0f, fabShadowColor)
+            if (isMenuInitialized) {
+                postInvalidate()
+            }
+        }
+    private var navShadowColor = Color.parseColor("#FF000000")
+        set(value) {
+            field = value
+            navPaint.setShadowLayer(mNavElevation, 0f, -6f, navShadowColor)
+
+            if (isMenuInitialized) {
+                postInvalidate()
+            }
+        }
+    private var mFabAnimDuration: Long = 300L
+        set(value) {
+            field = value
+            field = mFabAnimDuration
+        }
+
+    private var mFabElevation = 4.toPx(context).toFloat()
+        set(value) {
+            field = value
+            fabPaint.setShadowLayer(mFabElevation, 0f, 0f, fabShadowColor)
+            if (isMenuInitialized) {
+                postInvalidate()
+            }
+
+        }
+    private var mNavElevation = 6.toPx(context).toFloat()
+        set(value) {
+            field = value
+            navPaint.setShadowLayer(mNavElevation, 0f, -6f, navShadowColor)
+            if (isMenuInitialized) {
+                postInvalidate()
+            }
+        }
+
+    private var fabBorderStroke = 0.toPx(context).toFloat()
+        set(value) {
+            field = value
+            fabBorderPaint.strokeWidth = value
+            // fabBorderPaint.setShadowLayer(mFabElevation , -2f, -2f, fabShadowColor)
+            if (isMenuInitialized) {
+                postInvalidate()
+            }
+        }
+
+    private var fabBackgroundColor = Color.WHITE
+        set(value) {
+            field = value
+            fabPaint.color = value
+            if (isMenuInitialized) {
+                postInvalidate()
+            }
+        }
+
+    private var fabBorderColor = Color.BLACK
+        set(value) {
+            field = value
+            fabBorderPaint.color = value
+            if (isMenuInitialized) {
+                postInvalidate()
+            }
+        }
+
+    private var navBackgroundColor = Color.WHITE
+        set(value) {
+            field = value
+            navPaint.color = value
+            if (isMenuInitialized) {
+                postInvalidate()
+            }
+        }
+
+
+    // callback to synchronize the animation of AVD and this canvas when software canvas is used
+    private val avdUpdateCallback = object : Drawable.Callback {
+        override fun invalidateDrawable(who: Drawable) {
+            this@CurvyBottomNavigationView.postInvalidate()
+        }
+
+        override fun scheduleDrawable(who: Drawable, what: Runnable, `when`: Long) {
+            /* no-op */
+        }
+
+        override fun unscheduleDrawable(who: Drawable, what: Runnable) {
+            /* no-op */
+        }
+    }
+
+    init {
+        // remove the bg as will do our own drawing
+        setBackgroundColor(Color.TRANSPARENT)
+        // initialize the paint here with defaults, we will update paint colors latter from property setters
+        navPaint = Paint().apply {
+            isAntiAlias = true
+            Paint.ANTI_ALIAS_FLAG
+            style = Paint.Style.FILL_AND_STROKE
+            color = navBackgroundColor
+            setShadowLayer(
+                mNavElevation,
+                0f,
+                6f,
+                navShadowColor
+            )
+        }
+
+        fabPaint = Paint().apply {
+            Paint.ANTI_ALIAS_FLAG
+            isAntiAlias = true
+            style = Paint.Style.FILL_AND_STROKE
+            color = fabBackgroundColor
+            setShadowLayer(mFabElevation, 0f, 20f, fabShadowColor)
+
+
+        }
+        fabBorderPaint = Paint().apply {
+            Paint.ANTI_ALIAS_FLAG
+            isAntiAlias = true
+            style = Paint.Style.STROKE
+            color = fabBorderColor
+            strokeWidth = fabBorderStroke
+            /* setShadowLayer(
+                 mFabElevation,
+                 2f,
+                 2f,
+                 shadowColor
+             )*/
+
+        }
+
+
+        // read the attributes values
+        context.theme.obtainStyledAttributes(attrs, R.styleable.CurvyBottomNavigationView, 0, 0)
+            .apply {
+                try {
+                    mItemSelectedColor = getColor(
+                        R.styleable.CurvyBottomNavigationView_itemSelectedColor,
+                        mItemSelectedColor
+                    )
+                    mItemUnSelectedColor = getColor(
+                        R.styleable.CurvyBottomNavigationView_itemUnselectedColor,
+                        mItemUnSelectedColor
+                    )
+                    mFabAnimDuration = getInteger(
+                        R.styleable.CurvyBottomNavigationView_fabAnimDuration,
+                        mFabAnimDuration.toInt()
+                    ).toLong()
+                    fabBackgroundColor = getColor(
+                        R.styleable.CurvyBottomNavigationView_fabColor,
+                        fabBackgroundColor
+                    )
+
+                    fabBorderStroke = getDimension(
+                        R.styleable.CurvyBottomNavigationView_fabBorderStroke,
+                        fabBorderStroke
+                    )
+                    fabBorderColor = getColor(
+                        R.styleable.CurvyBottomNavigationView_fabBorderColor,
+                        Color.BLACK
+                    )
+
+                    navBackgroundColor =
+                        getColor(R.styleable.CurvyBottomNavigationView_navColor, navBackgroundColor)
+
+                    navShadowColor =
+                        getColor(
+                            R.styleable.CurvyBottomNavigationView_navShadowColor,
+                            navShadowColor
+                        )
+
+                    fabShadowColor =
+                        getColor(
+                            R.styleable.CurvyBottomNavigationView_fabShadowColor,
+                            fabShadowColor
+                        )
+
+                    mFabElevation = getDimension(
+                        R.styleable.CurvyBottomNavigationView_fabElevation,
+                        mFabElevation
+                    )
+                    mNavElevation = getDimension(
+                        R.styleable.CurvyBottomNavigationView_navElevation,
+                        mNavElevation
+                    )
+                } finally {
+                    recycle()
+                }
+            }
+
+        // use software rendering instead of hardware acceleration as hardware acceleration doesn't
+        // support shadowLayer below API 28
+        setLayerType(LAYER_TYPE_SOFTWARE, null)
+    }
+
+    fun getSelectedIndex(): Int {
+        return selectedIndex
+    }
+
+    fun isAnimating(): Boolean {
+        return isAnimating
+    }
+
+    fun setMenuItems(navMenuItems: Array<NavMenuItem>, activeIndex: Int = 0) {
+        if (navMenuItems.isEmpty()) {
+            isMenuInitialized = false
+            return
+        }
+        this.navMenuItems = navMenuItems
+        // initialize the index
+        fabIconIndex = activeIndex
+        selectedIndex = activeIndex
+        bottomNavItemViews = Array(navMenuItems.size) {
+            BottomNavItemView(context)
+        }
+        initializeMenuIcons()
+        initializeMenuAVDs()
+        initializeCurve(activeIndex)
+        initializeBottomItems(activeIndex)
+        isMenuInitialized = true
+
+        // setup the initial AVD
+        setupInitialAVD(activeIndex)
+    }
+
+    private fun setupInitialAVD(activeIndex: Int) {
+        // set the initial callback to the active item, so that we can animate AVD during app startup
+        menuAVDs[activeIndex].callback = avdUpdateCallback
+        menuAVDs[selectedIndex].start()
+        menuIcons[activeIndex].callback = avdUpdateCallback
+    }
+
+    private fun initializeCurve(index: Int) {
+        // only run when this layout has been laid out
+        doOnLayout {
+            // compute the cell width and centerX for the fab
+            menuCellWidth = width / navMenuItems.size
+            val offsetX = menuCellWidth * index
+            centerX = offsetX + menuCellWidth / 2f
+            computeCurve(offsetX, menuCellWidth)
+        }
+    }
+
+
+    private fun initializeMenuAVDs() {
+        val activeColorFilter = PorterDuffColorFilter(mItemSelectedColor, PorterDuff.Mode.SRC_IN)
+        menuAVDs = Array(navMenuItems.size) {
+            val avd = AnimatedVectorDrawableCompat.create(context, navMenuItems[it].animatedIcon)!!
+            avd.colorFilter = activeColorFilter
+            avd
+        }
+
+    }
+
+    private fun initializeMenuIcons() {
+        menuIcons = Array(navMenuItems.size) {
+            val drawable =
+                ResourcesCompat.getDrawable(resources, navMenuItems[it].icon, context.theme)!!
+            DrawableCompat.setTint(drawable, mItemUnSelectedColor)
+            drawable
+        }
+    }
+
+    private fun updateMenuAVDsTint() {
+        val activeColorFilter = PorterDuffColorFilter(mItemSelectedColor, PorterDuff.Mode.SRC_IN)
+        menuAVDs.forEach {
+            it.colorFilter = activeColorFilter
+        }
+    }
+
+    private fun updateMenuIconsTint() {
+        menuIcons.forEach {
+            DrawableCompat.setTint(it, mItemUnSelectedColor)
+        }
+    }
+
+    fun getMenuItems(): Array<NavMenuItem> {
+        return navMenuItems
+    }
+
+    // set the click listener for menu items
+    private fun setOnMenuItemClickListener(menuItemClickListener: (NavMenuItem, Int) -> Unit) {
+        this.menuItemClickListener = menuItemClickListener
+    }
+
+    // function to setup with navigation controller just like in BottomNavigationView
+    fun setupWithNavController(navController: NavController) {
+        // check for menu initialization
+        if (!isMenuInitialized) {
+            throw RuntimeException("initialize menu by calling setMenuItems() before setting up with NavController")
+        }
+
+        // initialize the menu
+        setOnMenuItemClickListener { item, _ ->
+            navigateToDestination(navController, item)
+        }
+        // setup destination change listener to properly sync the back button press
+        navController.addOnDestinationChangedListener { _, destination, _ ->
+            for (i in navMenuItems.indices) {
+                if (matchDestination(destination, navMenuItems[i].destinationId)) {
+                    if (selectedIndex != i && isAnimating) {
+                        // this is triggered internally, even if the animations looks kinda funky (if duration is long)
+                        // but we will sync with the destination
+                        animatorSet.cancel()
+                        isAnimating = false
+                    }
+                    onMenuItemClick(i)
+                }
+            }
+        }
+    }
+
+    // source code referenced from the actual JetPack Navigation Component
+    // refer to the original source code
+    private fun navigateToDestination(navController: NavController, itemNav: NavMenuItem) {
+        if (itemNav.destinationId == -1) {
+            throw RuntimeException("please set a valid id, unable the navigation!")
+        }
+        val builder = NavOptions.Builder()
+            .setLaunchSingleTop(true)
+            .setEnterAnim(R.anim.nav_default_enter_anim)
+            .setExitAnim(R.anim.nav_default_exit_anim)
+            .setPopEnterAnim(R.anim.nav_default_enter_anim)
+            .setPopExitAnim(R.anim.nav_default_exit_anim)
+        // pop to the navigation graph's start  destination
+        builder.setPopUpTo(findStartDestination(navController.graph).id, false)
+        val options = builder.build()
+        try {
+            navController.navigate(itemNav.destinationId, null, options)
+        } catch (e: IllegalArgumentException) {
+            Log.w(TAG, "unable to navigate!", e)
+        }
+    }
+
+    // source code referenced from the actual JetPack Navigation Component
+    // refer to the original source code
+    private fun matchDestination(destination: NavDestination, @IdRes destinationId: Int): Boolean {
+        var currentDestination = destination
+        while (currentDestination.id != destinationId && currentDestination.parent != null) {
+            currentDestination = currentDestination.parent!!
+        }
+
+        return currentDestination.id == destinationId
+    }
+
+    // source code referenced from the actual JetPack Navigation Component
+    // refer to the original source code
+    private fun findStartDestination(graph: NavGraph): NavDestination {
+        var startDestination: NavDestination = graph
+        while (startDestination is NavGraph) {
+
+            startDestination = graph.findNode(graph.startDestinationId)!!
+        }
+
+        return startDestination
+    }
+
+    private fun initializeBottomItems(activeItem: Int) {
+        // clear layout
+        removeAllViews()
+        val bottomNavLayout = LinearLayout(context)
+        // get the ripple from the theme
+        val typedValue = TypedValue()
+        context.theme.resolveAttribute(
+            androidx.appcompat.R.attr.selectableItemBackground,
+            typedValue,
+            true
+        )
+        menuIcons.forEachIndexed { index, icon ->
+            val menuItem = bottomNavItemViews[index]
+            menuItem.setMenuIcon(icon)
+            menuItem.setOnClickListener {
+                onMenuItemClick(index)
+            }
+            if (index == activeItem) {
+                // render the icon in fab instead of image view, but still allocate the space
+                menuItem.visibility = View.INVISIBLE
+            }
+            val layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT)
+            layoutParams.weight = 1f
+            bottomNavLayout.addView(menuItem, layoutParams)
+        }
+        val bottomNavLayoutParams = LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            resources.getDimension(R.dimen.cbn_height).toInt(),
+            Gravity.BOTTOM
+        )
+        addView(bottomNavLayout, bottomNavLayoutParams)
+    }
+
+    private fun onMenuItemClick(index: Int) {
+        if (selectedIndex == index) {
+            Log.i(TAG, "same icon multiple clicked, skipping animation!")
+            return
+        }
+        if (isAnimating) {
+            Log.i(TAG, "animation is in progress, skipping navigation")
+            return
+        }
+
+        fabIconIndex = selectedIndex
+        menuAVDs[index].stop()
+        prevSelectedIndex = selectedIndex
+        selectedIndex = index
+        // make all item except current item invisible
+        bottomNavItemViews.forEachIndexed { i, imageView ->
+            if (prevSelectedIndex == i) {
+                // show the previous selected view with alpha 0
+                imageView.visibility = VISIBLE
+                imageView.alpha = 0f
+            }
+        }
+        val newOffsetX = menuCellWidth * index
+        isAnimating = true
+        animateItemSelection(newOffsetX, menuCellWidth, index)
+        // notify the listener
+        menuItemClickListener?.invoke(navMenuItems[index], index)
+    }
+
+    private fun animateItemSelection(offset: Int, width: Int, index: Int) {
+        val finalCenterX = menuCellWidth * index + (menuCellWidth / 2f)
+        val propertyOffset = PropertyValuesHolder.ofInt(PROPERTY_OFFSET, cellOffsetX, offset)
+        val propertyCenterX = PropertyValuesHolder.ofFloat(PROPERTY_CENTER_X, centerX, finalCenterX)
+
+        // watch the direction and compute the diff
+        val isLTR = (prevSelectedIndex - index) < 0
+        val diff = abs(prevSelectedIndex - index)
+        // time allocated for each icon in the bottom nav
+        val iconAnimSlot = mFabAnimDuration / diff
+        // compute the time it will take to move from start to bottom of the curve
+        val curveBottomOffset = ((curveHalfWidth * mFabAnimDuration) / this.width).toLong()
+
+        val offsetAnimator = getBezierCurveAnimation(
+            mFabAnimDuration,
+            width,
+            iconAnimSlot,
+            isLTR,
+            index,
+            curveBottomOffset,
+            diff,
+            propertyOffset,
+            propertyCenterX
+        )
+
+        val fabYOffset = firstCurveEnd.y + fabRadius
+        val halfAnimDuration = mFabAnimDuration / 2
+        // hide the FAB
+        val centerYAnimatorHide = hideFAB(fabYOffset)
+        centerYAnimatorHide.duration = halfAnimDuration
+
+        // show the FAB with delay
+        val centerYAnimatorShow = showFAB(fabYOffset, index)
+        centerYAnimatorShow.startDelay = halfAnimDuration
+        centerYAnimatorShow.duration = halfAnimDuration
+
+        animatorSet = AnimatorSet()
+        animatorSet.playTogether(centerYAnimatorHide, offsetAnimator, centerYAnimatorShow)
+        animatorSet.interpolator = FastOutSlowInInterpolator()
+        animatorSet.start()
+    }
+
+    private fun getBezierCurveAnimation(
+        slideAnimDuration: Long,
+        width: Int,
+        iconAnimSlot: Long,
+        isLTR: Boolean,
+        index: Int,
+        curveBottomOffset: Long,
+        diff: Int,
+        vararg propertyOffset: PropertyValuesHolder,
+    ): ValueAnimator {
+        return ValueAnimator().apply {
+            setValues(*propertyOffset)
+            duration = slideAnimDuration
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    // reset all the status of icon animations
+                    bottomNavItemViews.forEach {
+                        it.resetAnimation()
+                    }
+                }
+
+                override fun onAnimationCancel(animation: Animator) {
+                    // reset all the status of icon animations
+                    bottomNavItemViews.forEach {
+                        it.resetAnimation()
+                    }
+                }
+            })
+            addUpdateListener { animator ->
+                val newOffset = getAnimatedValue(PROPERTY_OFFSET) as Int
+                // the curve will animate no matter what
+                computeCurve(newOffset, width)
+                postInvalidate()
+
+                // change the centerX of the FAB
+                centerX = getAnimatedValue(PROPERTY_CENTER_X) as Float
+                val currentTime = animator.animatedFraction * slideAnimDuration
+                // compute the index above which this curve is moving
+                // this is the relative index with respect to the previousSelectedIndex
+                var overIconIndex = ((currentTime + (iconAnimSlot)) / iconAnimSlot).toInt()
+                if (isLTR) {
+                    // add the offset
+                    overIconIndex += prevSelectedIndex
+                    // prevent animation when animatedFraction is 0
+                    if (overIconIndex > index) {
+                        return@addUpdateListener
+                    }
+                } else {
+                    // add the offset
+                    overIconIndex = prevSelectedIndex - overIconIndex
+                    // prevent animation when animatedFraction is 0
+                    if (overIconIndex < index) {
+                        return@addUpdateListener
+                    }
+                }
+
+                when {
+                    overIconIndex == index -> {
+                        // we are within the destination
+                        // animate the destination icon within the time the curve reaches it's boundary
+                        bottomNavItemViews[index].startDestinationAnimation(curveBottomOffset)
+                        if (diff == 1) {
+                            // also animate the source icon as this is the adjacent click event
+                            bottomNavItemViews[prevSelectedIndex].startSourceAnimation(
+                                slideAnimDuration
+                            )
+                        }
+                    }
+                    abs(overIconIndex - prevSelectedIndex) == 1 -> {
+                        // we currently in the adjacent icon of the current source icon, show source animations
+                        bottomNavItemViews[prevSelectedIndex].startSourceAnimation(slideAnimDuration)
+                        // also initialize the intermediate animations
+                        bottomNavItemViews[overIconIndex].startIntermediateAnimation(
+                            slideAnimDuration,
+                            curveBottomOffset
+                        )
+                    }
+                    else -> {
+                        // we over intermediate icons, show the intermediate animations
+                        bottomNavItemViews[overIconIndex].startIntermediateAnimation(
+                            slideAnimDuration,
+                            curveBottomOffset
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun showFAB(
+        fabYOffset: Float,
+        index: Int
+    ): ValueAnimator {
+        val propertyCenterYReverse =
+            PropertyValuesHolder.ofFloat(PROPERTY_CENTER_Y, fabYOffset, centerY)
+        return ValueAnimator().apply {
+            setValues(propertyCenterYReverse)
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationStart(animation: Animator?) {
+                    // set the callback before starting the animation as the Drawable class
+                    // internally uses WeakReference. So settings the callback only during initialization
+                    // will result in callback being cleared after certain time. This is a good place
+                    // to set the callback so that we can sync the drawable animation with our canvas
+                    menuAVDs[index].callback = avdUpdateCallback
+                    menuAVDs[index].start()
+                }
+
+                override fun onAnimationEnd(animation: Animator?) {
+                    // disable the clicks in the target view
+                    bottomNavItemViews[index].visibility = INVISIBLE
+                }
+            })
+            addUpdateListener { animator ->
+                val newCenterY = animator.getAnimatedValue(PROPERTY_CENTER_Y) as Float
+                curCenterY = newCenterY
+                postInvalidate()
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator?) {
+                    isAnimating = false
+                }
+            })
+        }
+    }
+
+    private fun hideFAB(fabYOffset: Float): ValueAnimator {
+        val propertyCenterY =
+            PropertyValuesHolder.ofFloat(PROPERTY_CENTER_Y, centerY, fabYOffset)
+        return ValueAnimator().apply {
+            setValues(propertyCenterY)
+            addUpdateListener { animator ->
+                val newCenterY = animator.getAnimatedValue(PROPERTY_CENTER_Y) as Float
+                curCenterY = newCenterY
+                postInvalidate()
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator?) {
+                    fabIconIndex = selectedIndex
+                }
+            })
+        }
+    }
+
+
+    private fun computeCurve(offsetX: Int, w: Int) {
+        // store the current offset (useful when animating)
+        this.cellOffsetX = offsetX
+        // first curve
+        firstCurveStart.apply {
+            x = offsetX + (w / 2) - curveHalfWidth
+            y = bottomNavOffsetY
+        }
+        firstCurveEnd.apply {
+            x = offsetX + (w / 2f)
+            y = layoutHeight - curveBottomOffset
+        }
+        firstCurveControlPoint1.apply {
+            x = firstCurveStart.x + topControlX
+            y = topControlY
+        }
+        firstCurveControlPoint2.apply {
+            x = firstCurveEnd.x - bottomControlX
+            y = firstCurveEnd.y - bottomControlY
+        }
+
+        // second curve
+        secondCurveStart.set(firstCurveEnd.x, firstCurveEnd.y)
+        secondCurveEnd.apply {
+            x = offsetX + (w / 2) + curveHalfWidth
+            y = bottomNavOffsetY
+        }
+        secondCurveControlPoint1.apply {
+            x = secondCurveStart.x + bottomControlX
+            y = secondCurveStart.y - bottomControlY
+        }
+        secondCurveControlPoint2.apply {
+            x = secondCurveEnd.x - topControlX
+            y = topControlY
+        }
+
+        // generate the path
+        path.reset()
+        path.moveTo(0f, bottomNavOffsetY)
+        // horizontal line from left to the start of first curve
+        path.lineTo(firstCurveStart.x, firstCurveStart.y)
+        // add the first curve
+        path.cubicTo(
+            firstCurveControlPoint1.x,
+            firstCurveControlPoint1.y,
+            firstCurveControlPoint2.x,
+            firstCurveControlPoint2.y,
+            firstCurveEnd.x,
+            firstCurveEnd.y
+        )
+        // add the second curve
+        path.cubicTo(
+            secondCurveControlPoint1.x,
+            secondCurveControlPoint1.y,
+            secondCurveControlPoint2.x,
+            secondCurveControlPoint2.y,
+            secondCurveEnd.x,
+            secondCurveEnd.y
+        )
+        // continue to draw the remaining portion of the bottom navigation
+        path.lineTo(width.toFloat(), bottomNavOffsetY)
+        path.lineTo(width.toFloat(), height.toFloat())
+        path.lineTo(0f, height.toFloat())
+        path.close()
+    }
+
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        if (!isMenuInitialized) {
+            return
+        }
+
+        canvas.drawCircle(centerX, curCenterY, fabSize / 2f, fabPaint)
+
+        fabBorderRadius = fabSize / 2f
+        if (fabBorderStroke > 0) {
+            canvas.drawCircle(
+                centerX,
+                curCenterY,
+                fabBorderRadius,
+                fabBorderPaint
+            )
+        }
+
+        // draw the AVD within the circle
+        menuAVDs[fabIconIndex].setBounds(
+            (centerX - menuIcons[fabIconIndex].intrinsicWidth / 2).toInt(),
+            (curCenterY - menuIcons[fabIconIndex].intrinsicHeight / 2).toInt(),
+            (centerX + menuIcons[fabIconIndex].intrinsicWidth / 2).toInt(),
+            (curCenterY + menuIcons[fabIconIndex].intrinsicHeight / 2).toInt()
+        )
+        menuAVDs[fabIconIndex].draw(canvas)
+        // draw the path last so that we can clip the FAB and AVD
+        canvas.drawPath(path, navPaint)
+    }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        // our minimum height is defined in R.dimen.cbn_layout_height
+        // currently we don't support custom height and use defaults suggested by Material Design Specs
+        val h: Int =
+            paddingTop + paddingBottom + resources.getDimensionPixelSize(R.dimen.cbn_layout_height)
+        super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(h, MeasureSpec.EXACTLY))
+    }
+
+}

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <declare-styleable name="CurvyBottomNavigationView">
+        <attr name="itemSelectedColor" format="color" />
+        <attr name="itemUnselectedColor" format="color" />
+        <attr name="fabAnimDuration" format="integer" />
+        <attr name="fabElevation" format="dimension" />
+        <attr name="navElevation" format="dimension" />
+        <attr name="fabColor" format="color" />
+        <attr name="navColor" format="color" />
+        <attr name="fabBorderColor" format="color" />
+        <attr name="fabBorderStroke" format="dimension" />
+        <attr name="fabShadowColor" format="color" />
+        <attr name="navShadowColor" format="color" />
+
+    </declare-styleable>
+</resources>
