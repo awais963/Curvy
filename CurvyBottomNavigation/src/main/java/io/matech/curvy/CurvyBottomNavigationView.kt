@@ -22,7 +22,6 @@ import androidx.navigation.NavDestination
 import androidx.navigation.NavGraph
 import androidx.navigation.NavOptions
 import androidx.vectordrawable.graphics.drawable.AnimatedVectorDrawableCompat
-import io.matech.curvybottomnavigation.R
 import kotlin.math.abs
 
 class CurvyBottomNavigationView @JvmOverloads constructor(
