@@ -1,5 +1,7 @@
 [![](https://jitpack.io/v/mughal963/Curvy.svg)](https://jitpack.io/#mughal963/Curvy)
 
+[![Maven Central](https://img.shields.io/maven-central/v/com.github.mughal963:Curvy.svg?label=Maven%20Central)](https://search.maven.org/search?q=g:%22com.github.mughal963:Curvy)
+
 A simple curved bottom navigation for Android with AnimatedVectorDrawable and Jetpack Navigation support.
 
 
